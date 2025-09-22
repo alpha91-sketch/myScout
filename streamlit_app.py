@@ -5,7 +5,7 @@ import re
 import json
 import os
 
-st.title("Scout-Import Generator (erweiterte Version)")
+st.title("Scout-Import Generator (stabilisiert + Export-Fix)")
 
 # Mapping laden
 with open("data/felder_mapping.json", "r", encoding="utf-8") as f:
@@ -83,33 +83,19 @@ if st.button("Scout-Datei erzeugen"):
         else:
             out_text = raw
 
-        # FROM patch: Joins für mehrere Tabellen
-        if "PGRDAT" in [t for t, _ in fields] and "VERTRAG" in [t for t, _ in fields]:
-            out_text = re.sub(r"FROM\s+(\S+)",
-                              r"FROM PGRDAT JOIN VERTRAG ON PGRDAT.MAN = VERTRAG.MAN "
-                              r"AND PGRDAT.AK = VERTRAG.AK AND PGRDAT.PNR = VERTRAG.PNR",
-                              out_text, flags=re.S)
-
+        # FROM patch (stabilisiert)
+        join_clauses = []
+        if "VERTRAG" in [t for t, _ in fields]:
+            join_clauses.append("JOIN VERTRAG ON PGRDAT.MAN = VERTRAG.MAN AND PGRDAT.AK = VERTRAG.AK AND PGRDAT.PNR = VERTRAG.PNR")
         if "FBA" in [t for t, _ in fields]:
-            out_text = out_text.replace(
-                "FROM PGRDAT",
-                "FROM PGRDAT JOIN FBA ON PGRDAT.MAN = FBA.MAN "
-                "AND PGRDAT.AK = FBA.AK AND PGRDAT.PNR = FBA.PNR"
-            )
-
+            join_clauses.append("JOIN FBA ON PGRDAT.MAN = FBA.MAN AND PGRDAT.AK = FBA.AK AND PGRDAT.PNR = FBA.PNR")
         if "ZEITENKAL" in [t for t, _ in fields]:
-            out_text = out_text.replace(
-                "FROM PGRDAT",
-                "FROM PGRDAT JOIN ZEITENKAL ON PGRDAT.MAN = ZEITENKAL.MAN "
-                "AND PGRDAT.AK = ZEITENKAL.AK AND PGRDAT.PNR = ZEITENKAL.PNR"
-            )
-
+            join_clauses.append("JOIN ZEITENKAL ON PGRDAT.MAN = ZEITENKAL.MAN AND PGRDAT.AK = ZEITENKAL.AK AND PGRDAT.PNR = ZEITENKAL.PNR")
         if "SALDEN" in [t for t, _ in fields]:
-            out_text = out_text.replace(
-                "FROM PGRDAT",
-                "FROM PGRDAT JOIN SALDEN ON PGRDAT.MAN = SALDEN.MAN "
-                "AND PGRDAT.AK = SALDEN.AK AND PGRDAT.PNR = SALDEN.PNR"
-            )
+            join_clauses.append("JOIN SALDEN ON PGRDAT.MAN = SALDEN.MAN AND PGRDAT.AK = SALDEN.AK AND PGRDAT.PNR = SALDEN.PNR")
+
+        if join_clauses:
+            out_text = re.sub(r"FROM\s+\S+", "FROM PGRDAT " + " ".join(join_clauses), out_text, flags=re.S)
 
         # WHERE patch
         if where_clause.strip():
@@ -158,6 +144,9 @@ if st.button("Scout-Datei erzeugen"):
         with open(history_file, "a", encoding="utf-8") as hist:
             hist.write(f"\n-- Export {timestamp}\n")
             hist.write(out_text + "\n")
+
+        # Dummy-Datei für GitHub sichtbar machen
+        Path("exports/.gitkeep").write_text("")
 
         # Download
         st.success(f"Scout-Datei aus Seed {seed_file} wurde erstellt ✅")
