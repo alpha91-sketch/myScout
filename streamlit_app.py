@@ -4,7 +4,7 @@ from pathlib import Path
 import re
 import json
 
-st.title("Scout-Import Generator (mit SELECT + WHERE)")
+st.title("Scout-Import Generator (SELECT + WHERE + GROUP BY)")
 
 # Mapping laden
 with open("data/felder_mapping.json", "r", encoding="utf-8") as f:
@@ -44,6 +44,16 @@ if st.button("Scout-Datei erzeugen"):
                               f"WHERE {where_clause} \\2",
                               out_text, flags=re.S)
 
+        # GROUP BY automatisch ergänzen
+        if fields:
+            group_by_clause = "GROUP BY " + ",".join(str(i+1) for i in range(len(fields)))
+            if "GROUP BY" in out_text:
+                out_text = re.sub(r"GROUP BY\s+(.+?)(ORDER BY|$)",
+                                  f"{group_by_clause} \\2",
+                                  out_text, flags=re.S)
+            else:
+                out_text = out_text + "\n" + group_by_clause
+
         # Titel patch
         m = re.search(r"i_name IN \('(\d{8})'", raw, flags=re.IGNORECASE)
         if m:
@@ -52,10 +62,10 @@ if st.button("Scout-Datei erzeugen"):
                               f'"{iname}","{titel}"',
                               out_text, count=1)
 
-        st.success("Scout-Datei wurde erstellt ✅ (mit SELECT + WHERE)")
+        st.success("Scout-Datei wurde erstellt ✅ (mit SELECT + WHERE + GROUP BY)")
         st.download_button("Scout-Datei herunterladen",
                            data=out_text,
-                           file_name="Scout_Import_WHERE.sql",
+                           file_name="Scout_Import_GROUPBY.sql",
                            mime="text/plain")
     except Exception as e:
         st.error(f"Fehler: {e}")
