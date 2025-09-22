@@ -1,20 +1,40 @@
+S3
+Sehr geehrte Damen und Herren,   
+vielen Dank für Ihre E-Mail. Ich bin gerade nicht erreichbar. Meine Emails werden nicht weitergeleitet. 
+
+Beste Grüße, 
+Andy Runzheimer   
+
+Dear Sir or Madam, 
+Thank you for your email. I'm currently not available. My emails will not be forwarded.
+
+Best regards, 
+Andy
+
+Runzheimer, Andy
+​
+Runzheimer, Andy​
 import streamlit as st
 from datetime import date
 from pathlib import Path
 import re
 import json
+import os
 
-st.title("Scout-Import Generator (SELECT + WHERE + GROUP BY + ORDER BY)")
+st.title("Scout-Import Generator (Seed-Auswahl + SELECT + WHERE + GROUP BY + ORDER BY)")
 
 # Mapping laden
 with open("data/felder_mapping.json", "r", encoding="utf-8") as f:
     MAPPING = json.load(f)
 
+# Seeds laden
+seed_files = [f for f in os.listdir("seeds") if f.endswith(".sql")]
+seed_file = st.selectbox("Seed-Datei wählen", seed_files)
+
 # Eingaben
 mandant = st.text_input("Mandant", "63000")
 ak = st.multiselect("Abrechnungskreis", ["55", "70", "90"], default=["70"])
 stichtag = st.date_input("Stichtag aktiv bis", date(2099, 1, 31))
-seed_file = st.text_input("Seed-Datei (Pfad im Repo)", "seeds/00037736.sql")
 
 # Tabelle & Felder
 table = st.selectbox("Tabelle wählen", list(MAPPING.keys()))
@@ -28,7 +48,7 @@ order_by = st.text_input("ORDER BY (optional)", "1,2")
 
 if st.button("Scout-Datei erzeugen"):
     try:
-        raw = Path(seed_file).read_text(encoding="utf-8", errors="ignore")
+        raw = Path(f"seeds/{seed_file}").read_text(encoding="utf-8", errors="ignore")
         titel = f"{mandant}_{','.join(ak)}_{stichtag}"
 
         # SELECT patch
@@ -55,10 +75,10 @@ if st.button("Scout-Datei erzeugen"):
                                   f"{group_by_clause} \\2",
                                   out_text, flags=re.S)
             else:
-                # direkt vor ORDER BY einfügen oder am Ende des SQL
                 out_text = re.sub(r"(WHERE.+?)(ORDER BY|$)",
                                   f"\\1\n{group_by_clause} \\2",
                                   out_text, flags=re.S)
+
         # ORDER BY patch
         if order_by.strip():
             if "ORDER BY" in out_text:
@@ -66,7 +86,6 @@ if st.button("Scout-Datei erzeugen"):
                                   f"ORDER BY {order_by} \\2",
                                   out_text, flags=re.S)
             else:
-                # direkt nach GROUP BY oder WHERE einfügen
                 if "GROUP BY" in out_text:
                     out_text = re.sub(r"(GROUP BY.+?)($|\n)",
                                       f"\\1\nORDER BY {order_by} \\2",
@@ -75,6 +94,7 @@ if st.button("Scout-Datei erzeugen"):
                     out_text = re.sub(r"(WHERE.+?)($|\n)",
                                       f"\\1\nORDER BY {order_by} \\2",
                                       out_text, flags=re.S)
+
         # Titel patch
         m = re.search(r"i_name IN \('(\d{8})'", raw, flags=re.IGNORECASE)
         if m:
@@ -83,10 +103,10 @@ if st.button("Scout-Datei erzeugen"):
                               f'"{iname}","{titel}"',
                               out_text, count=1)
 
-        st.success("Scout-Datei wurde erstellt ✅ (mit SELECT + WHERE + GROUP BY + ORDER BY)")
+        st.success(f"Scout-Datei aus Seed {seed_file} wurde erstellt ✅")
         st.download_button("Scout-Datei herunterladen",
                            data=out_text,
-                           file_name="Scout_Import_FULL.sql",
+                           file_name=f"Scout_{seed_file.replace('.sql','')}_GEN.sql",
                            mime="text/plain")
     except Exception as e:
         st.error(f"Fehler: {e}")
