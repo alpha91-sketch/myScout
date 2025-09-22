@@ -55,8 +55,10 @@ if st.button("Scout-Datei erzeugen"):
                                   f"{group_by_clause} \\2",
                                   out_text, flags=re.S)
             else:
-                out_text = out_text + "\n" + group_by_clause
-
+                # direkt vor ORDER BY einfügen oder am Ende des SQL
+                out_text = re.sub(r"(WHERE.+?)(ORDER BY|$)",
+                                  f"\\1\n{group_by_clause} \\2",
+                                  out_text, flags=re.S)
         # ORDER BY patch
         if order_by.strip():
             if "ORDER BY" in out_text:
@@ -64,8 +66,15 @@ if st.button("Scout-Datei erzeugen"):
                                   f"ORDER BY {order_by} \\2",
                                   out_text, flags=re.S)
             else:
-                out_text = out_text + "\n" + f"ORDER BY {order_by}"
-
+                # direkt nach GROUP BY oder WHERE einfügen
+                if "GROUP BY" in out_text:
+                    out_text = re.sub(r"(GROUP BY.+?)($|\n)",
+                                      f"\\1\nORDER BY {order_by} \\2",
+                                      out_text, flags=re.S)
+                else:
+                    out_text = re.sub(r"(WHERE.+?)($|\n)",
+                                      f"\\1\nORDER BY {order_by} \\2",
+                                      out_text, flags=re.S)
         # Titel patch
         m = re.search(r"i_name IN \('(\d{8})'", raw, flags=re.IGNORECASE)
         if m:
