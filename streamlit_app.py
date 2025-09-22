@@ -1,39 +1,29 @@
 import streamlit as st
 from datetime import date, datetime
-from pathlib import Path
-import re
 import json
 import os
 
-st.title("Scout-Import Generator (stabilisiert + Export-Fix)")
+st.title("Scout-Import Generator (Minimal, PGRDAT + VERTRAG)")
 
 # Mapping laden
 with open("data/felder_mapping.json", "r", encoding="utf-8") as f:
     MAPPING = json.load(f)
-
-# Seeds laden
-seed_files = [f for f in os.listdir("seeds") if f.endswith(".sql")]
-seed_file = st.selectbox("Seed-Datei wählen", seed_files)
 
 # Eingaben
 mandant = st.text_input("Mandant", "63000")
 ak = st.multiselect("Abrechnungskreis", ["55", "70", "90"], default=["70"])
 stichtag = st.date_input("Stichtag aktiv bis", date(2099, 1, 31))
 
-# Tabellen-Auswahl (erweitert)
-tables = st.multiselect(
-    "Tabellen wählen",
-    ["PGRDAT", "VERTRAG", "FBA", "ZEITENKAL", "SALDEN"],
-    default=["PGRDAT"]
-)
+# Tabellen fix: PGRDAT + VERTRAG
+tables = ["PGRDAT", "VERTRAG"]
 
-# Felder-Auswahl pro Tabelle
+# Felder-Auswahl
 fields = []
 for t in tables:
     selected = st.multiselect(f"Felder aus {t} auswählen", list(MAPPING[t].keys()), key=f"fields_{t}")
     fields.extend([(t, f) for f in selected])
 
-# Dynamische WHERE-Bausteine
+# WHERE-Bausteine
 st.subheader("WHERE-Bedingungen")
 if "where_conditions" not in st.session_state:
     st.session_state["where_conditions"] = []
@@ -70,89 +60,58 @@ order_by = st.text_input("ORDER BY (optional)", "1,2")
 
 if st.button("Scout-Datei erzeugen"):
     try:
-        raw = Path(f"seeds/{seed_file}").read_text(encoding="utf-8", errors="ignore")
-        titel = f"{mandant}_{','.join(ak)}_{stichtag}"
-
-        # SELECT patch
+        # SELECT Block
         if fields:
             db_fields = [f"{t}.{MAPPING[t].get(f, f)}" for t, f in fields]
-            select_block = ", ".join(db_fields)
-            out_text = re.sub(r"SELECT\s+(.+?)\s+FROM",
-                              f"SELECT {select_block} FROM",
-                              raw, flags=re.S)
         else:
-            out_text = raw
+            db_fields = ["PGRDAT.MAN", "PGRDAT.AK", "PGRDAT.PNR"]  # Fallback
+        select_block = ",\n    ".join(db_fields)
 
-        # FROM patch (stabilisiert)
-        join_clauses = []
-        if "VERTRAG" in [t for t, _ in fields]:
-            join_clauses.append("JOIN VERTRAG ON PGRDAT.MAN = VERTRAG.MAN AND PGRDAT.AK = VERTRAG.AK AND PGRDAT.PNR = VERTRAG.PNR")
-        if "FBA" in [t for t, _ in fields]:
-            join_clauses.append("JOIN FBA ON PGRDAT.MAN = FBA.MAN AND PGRDAT.AK = FBA.AK AND PGRDAT.PNR = FBA.PNR")
-        if "ZEITENKAL" in [t for t, _ in fields]:
-            join_clauses.append("JOIN ZEITENKAL ON PGRDAT.MAN = ZEITENKAL.MAN AND PGRDAT.AK = ZEITENKAL.AK AND PGRDAT.PNR = ZEITENKAL.PNR")
-        if "SALDEN" in [t for t, _ in fields]:
-            join_clauses.append("JOIN SALDEN ON PGRDAT.MAN = SALDEN.MAN AND PGRDAT.AK = SALDEN.AK AND PGRDAT.PNR = SALDEN.PNR")
+        # FROM Block mit fixem Join
+        from_block = (
+            "FROM PGRDAT\n"
+            "JOIN VERTRAG ON PGRDAT.MAN = VERTRAG.MAN\n"
+            "    AND PGRDAT.AK = VERTRAG.AK\n"
+            "    AND PGRDAT.PNR = VERTRAG.PNR"
+        )
 
-        if join_clauses:
-            out_text = re.sub(r"FROM\s+\S+", "FROM PGRDAT " + " ".join(join_clauses), out_text, flags=re.S)
-
-        # WHERE patch
+        # WHERE Block
+        where_block = ""
         if where_clause.strip():
-            if "WHERE" in out_text:
-                out_text = re.sub(r"WHERE\s+(.+?)(GROUP BY|ORDER BY|$)",
-                                  f"WHERE {where_clause} \\2",
-                                  out_text, flags=re.S)
-            else:
-                out_text = re.sub(r"(FROM.+?)(GROUP BY|ORDER BY|$)",
-                                  f"\\1\nWHERE {where_clause} \\2",
-                                  out_text, flags=re.S)
+            where_block = f"WHERE {where_clause}"
 
-        # GROUP BY automatisch
+        # GROUP BY Block
+        group_by_block = ""
         if fields:
-            group_by_clause = "GROUP BY " + ",".join(str(i+1) for i in range(len(fields)))
-            if "GROUP BY" in out_text:
-                out_text = re.sub(r"GROUP BY\s+(.+?)(ORDER BY|$)",
-                                  f"{group_by_clause} \\2",
-                                  out_text, flags=re.S)
-            else:
-                out_text = re.sub(r"(WHERE.+?)(ORDER BY|$)",
-                                  f"\\1\n{group_by_clause} \\2",
-                                  out_text, flags=re.S)
+            group_by_block = "GROUP BY " + ",".join(str(i+1) for i in range(len(fields)))
 
-        # ORDER BY patch
+        # ORDER BY Block
+        order_by_block = ""
         if order_by.strip():
-            if "ORDER BY" in out_text:
-                out_text = re.sub(r"ORDER BY\s+(.+?)($|\n)",
-                                  f"ORDER BY {order_by} \\2",
-                                  out_text, flags=re.S)
-            else:
-                out_text += f"\nORDER BY {order_by}"
+            order_by_block = f"ORDER BY {order_by}"
 
-        # Titel patch
-        m = re.search(r"i_name IN \('(\d{8})'", raw, flags=re.IGNORECASE)
-        if m:
-            iname = m.group(1)
-            out_text = re.sub(rf'"{re.escape(iname)}","[^"]+"',
-                              f'"{iname}","{titel}"',
-                              out_text, count=1)
+        # Finales SQL zusammensetzen
+        out_text = (
+            "SELECT\n    " + select_block + "\n" +
+            from_block + "\n" +
+            (where_block + "\n" if where_block else "") +
+            (group_by_block + "\n" if group_by_block else "") +
+            (order_by_block + "\n" if order_by_block else "")
+        )
 
-        # Export-Verwaltung: History speichern
+        # Export speichern
         os.makedirs("exports", exist_ok=True)
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        history_file = Path("exports/history.sql")
-        with open(history_file, "a", encoding="utf-8") as hist:
-            hist.write(f"\n-- Export {timestamp}\n")
-            hist.write(out_text + "\n")
-
-        # Dummy-Datei für GitHub sichtbar machen
-        Path("exports/.gitkeep").write_text("")
+        file_name = f"Scout_Minimal_{timestamp}.sql"
+        file_path = os.path.join("exports", file_name)
+        with open(file_path, "w", encoding="utf-8") as f:
+            f.write(out_text)
 
         # Download
-        st.success(f"Scout-Datei aus Seed {seed_file} wurde erstellt ✅")
+        st.success("Scout-Datei wurde erstellt ✅ (Minimal-Version)")
         st.download_button("Scout-Datei herunterladen",
                            data=out_text,
-                           file_name=f"Scout_{seed_file.replace('.sql','')}_{timestamp}.sql",
+                           file_name=file_name,
                            mime="text/plain")
 
     except Exception as e:
