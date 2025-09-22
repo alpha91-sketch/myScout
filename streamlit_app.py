@@ -1,11 +1,11 @@
 import streamlit as st
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 import re
 import json
 import os
 
-st.title("Scout-Import Generator (Multi-Tabellen + WHERE-Bausteine)")
+st.title("Scout-Import Generator (erweiterte Version)")
 
 # Mapping laden
 with open("data/felder_mapping.json", "r", encoding="utf-8") as f:
@@ -21,34 +21,47 @@ ak = st.multiselect("Abrechnungskreis", ["55", "70", "90"], default=["70"])
 stichtag = st.date_input("Stichtag aktiv bis", date(2099, 1, 31))
 
 # Tabellen-Auswahl (erweitert)
-tables = st.multiselect("Tabellen wählen", ["PGRDAT", "VERTRAG", "FBA"], default=["PGRDAT"])
+tables = st.multiselect(
+    "Tabellen wählen",
+    ["PGRDAT", "VERTRAG", "FBA", "ZEITENKAL", "SALDEN"],
+    default=["PGRDAT"]
+)
 
 # Felder-Auswahl pro Tabelle
 fields = []
 for t in tables:
-    selected = st.multiselect(f"Felder aus {t} auswählen", list(MAPPING[t].keys()))
+    selected = st.multiselect(f"Felder aus {t} auswählen", list(MAPPING[t].keys()), key=f"fields_{t}")
     fields.extend([(t, f) for f in selected])
 
-# WHERE-Bausteine
-st.subheader("WHERE-Bedingungen aufbauen")
-where_parts = []
-max_conditions = 3  # Anzahl Bedingungen begrenzen (für Demo)
+# Dynamische WHERE-Bausteine
+st.subheader("WHERE-Bedingungen")
+if "where_conditions" not in st.session_state:
+    st.session_state["where_conditions"] = []
 
-for i in range(max_conditions):
-    col1, col2, col3 = st.columns([3, 2, 3])
+def add_condition():
+    st.session_state["where_conditions"].append({"table": "PGRDAT", "field": "", "op": "=", "val": ""})
+
+def clear_conditions():
+    st.session_state["where_conditions"] = []
+
+st.button("Bedingung hinzufügen", on_click=add_condition)
+st.button("Alle Bedingungen löschen", on_click=clear_conditions)
+
+where_parts = []
+for idx, cond in enumerate(st.session_state["where_conditions"]):
+    col1, col2, col3, col4 = st.columns([2, 3, 2, 3])
     with col1:
-        table_choice = st.selectbox(f"Tabelle {i+1}", tables, key=f"where_table_{i}")
-        field_choice = st.selectbox(
-            f"Feld {i+1}", list(MAPPING[table_choice].keys()), key=f"where_field_{i}"
-        )
+        table_choice = st.selectbox(f"Tabelle {idx+1}", tables, key=f"where_table_{idx}")
+        cond["table"] = table_choice
     with col2:
-        operator = st.selectbox(
-            f"Operator {i+1}", ["=", "!=", ">", "<", ">=", "<=", "LIKE"], key=f"where_op_{i}"
-        )
+        field_choice = st.selectbox(f"Feld {idx+1}", list(MAPPING[cond['table']].keys()), key=f"where_field_{idx}")
+        cond["field"] = field_choice
     with col3:
-        value = st.text_input(f"Wert {i+1}", key=f"where_val_{i}")
-    if value:
-        where_parts.append(f"{table_choice}.{MAPPING[table_choice][field_choice]} {operator} '{value}'")
+        cond["op"] = st.selectbox(f"Operator {idx+1}", ["=", "!=", ">", "<", ">=", "<=", "LIKE"], key=f"where_op_{idx}")
+    with col4:
+        cond["val"] = st.text_input(f"Wert {idx+1}", key=f"where_val_{idx}")
+    if cond["val"]:
+        where_parts.append(f"{cond['table']}.{MAPPING[cond['table']][cond['field']]} {cond['op']} '{cond['val']}'")
 
 where_clause = " AND ".join(where_parts)
 
@@ -77,11 +90,25 @@ if st.button("Scout-Datei erzeugen"):
                               r"AND PGRDAT.AK = VERTRAG.AK AND PGRDAT.PNR = VERTRAG.PNR",
                               out_text, flags=re.S)
 
-        if "PGRDAT" in [t for t, _ in fields] and "FBA" in [t for t, _ in fields]:
+        if "FBA" in [t for t, _ in fields]:
             out_text = out_text.replace(
                 "FROM PGRDAT",
                 "FROM PGRDAT JOIN FBA ON PGRDAT.MAN = FBA.MAN "
                 "AND PGRDAT.AK = FBA.AK AND PGRDAT.PNR = FBA.PNR"
+            )
+
+        if "ZEITENKAL" in [t for t, _ in fields]:
+            out_text = out_text.replace(
+                "FROM PGRDAT",
+                "FROM PGRDAT JOIN ZEITENKAL ON PGRDAT.MAN = ZEITENKAL.MAN "
+                "AND PGRDAT.AK = ZEITENKAL.AK AND PGRDAT.PNR = ZEITENKAL.PNR"
+            )
+
+        if "SALDEN" in [t for t, _ in fields]:
+            out_text = out_text.replace(
+                "FROM PGRDAT",
+                "FROM PGRDAT JOIN SALDEN ON PGRDAT.MAN = SALDEN.MAN "
+                "AND PGRDAT.AK = SALDEN.AK AND PGRDAT.PNR = SALDEN.PNR"
             )
 
         # WHERE patch
@@ -114,14 +141,7 @@ if st.button("Scout-Datei erzeugen"):
                                   f"ORDER BY {order_by} \\2",
                                   out_text, flags=re.S)
             else:
-                if "GROUP BY" in out_text:
-                    out_text = re.sub(r"(GROUP BY.+?)($|\n)",
-                                      f"\\1\nORDER BY {order_by} \\2",
-                                      out_text, flags=re.S)
-                else:
-                    out_text = re.sub(r"(WHERE.+?)($|\n)",
-                                      f"\\1\nORDER BY {order_by} \\2",
-                                      out_text, flags=re.S)
+                out_text += f"\nORDER BY {order_by}"
 
         # Titel patch
         m = re.search(r"i_name IN \('(\d{8})'", raw, flags=re.IGNORECASE)
@@ -131,10 +151,20 @@ if st.button("Scout-Datei erzeugen"):
                               f'"{iname}","{titel}"',
                               out_text, count=1)
 
+        # Export-Verwaltung: History speichern
+        os.makedirs("exports", exist_ok=True)
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        history_file = Path("exports/history.sql")
+        with open(history_file, "a", encoding="utf-8") as hist:
+            hist.write(f"\n-- Export {timestamp}\n")
+            hist.write(out_text + "\n")
+
+        # Download
         st.success(f"Scout-Datei aus Seed {seed_file} wurde erstellt ✅")
         st.download_button("Scout-Datei herunterladen",
                            data=out_text,
-                           file_name=f"Scout_{seed_file.replace('.sql','')}_MULTI_WHERE.sql",
+                           file_name=f"Scout_{seed_file.replace('.sql','')}_{timestamp}.sql",
                            mime="text/plain")
+
     except Exception as e:
         st.error(f"Fehler: {e}")
