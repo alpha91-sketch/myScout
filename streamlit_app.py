@@ -4,7 +4,7 @@ from pathlib import Path
 import re
 import json
 
-st.title("Scout-Import Generator (SELECT + WHERE + GROUP BY)")
+st.title("Scout-Import Generator (SELECT + WHERE + GROUP BY + ORDER BY)")
 
 # Mapping laden
 with open("data/felder_mapping.json", "r", encoding="utf-8") as f:
@@ -22,6 +22,9 @@ fields = st.multiselect("Felder auswählen", list(MAPPING[table].keys()))
 
 # WHERE-Bedingung
 where_clause = st.text_area("WHERE-Bedingungen (optional)", "PGRDAT.AK = '70'")
+
+# ORDER BY
+order_by = st.text_input("ORDER BY (optional)", "1,2")
 
 if st.button("Scout-Datei erzeugen"):
     try:
@@ -54,6 +57,15 @@ if st.button("Scout-Datei erzeugen"):
             else:
                 out_text = out_text + "\n" + group_by_clause
 
+        # ORDER BY patch
+        if order_by.strip():
+            if "ORDER BY" in out_text:
+                out_text = re.sub(r"ORDER BY\s+(.+?)($|\n)",
+                                  f"ORDER BY {order_by} \\2",
+                                  out_text, flags=re.S)
+            else:
+                out_text = out_text + "\n" + f"ORDER BY {order_by}"
+
         # Titel patch
         m = re.search(r"i_name IN \('(\d{8})'", raw, flags=re.IGNORECASE)
         if m:
@@ -62,10 +74,10 @@ if st.button("Scout-Datei erzeugen"):
                               f'"{iname}","{titel}"',
                               out_text, count=1)
 
-        st.success("Scout-Datei wurde erstellt ✅ (mit SELECT + WHERE + GROUP BY)")
+        st.success("Scout-Datei wurde erstellt ✅ (mit SELECT + WHERE + GROUP BY + ORDER BY)")
         st.download_button("Scout-Datei herunterladen",
                            data=out_text,
-                           file_name="Scout_Import_GROUPBY.sql",
+                           file_name="Scout_Import_FULL.sql",
                            mime="text/plain")
     except Exception as e:
         st.error(f"Fehler: {e}")
