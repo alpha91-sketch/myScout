@@ -1,19 +1,3 @@
-S3
-Sehr geehrte Damen und Herren,   
-vielen Dank für Ihre E-Mail. Ich bin gerade nicht erreichbar. Meine Emails werden nicht weitergeleitet. 
-
-Beste Grüße, 
-Andy Runzheimer   
-
-Dear Sir or Madam, 
-Thank you for your email. I'm currently not available. My emails will not be forwarded.
-
-Best regards, 
-Andy
-
-Runzheimer, Andy
-​
-Runzheimer, Andy​
 import streamlit as st
 from datetime import date
 from pathlib import Path
