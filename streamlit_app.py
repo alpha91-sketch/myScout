@@ -4,7 +4,7 @@ from pathlib import Path
 import re
 import json
 
-st.title("Scout-Import Generator (mit SELECT)")
+st.title("Scout-Import Generator (mit SELECT + WHERE)")
 
 # Mapping laden
 with open("data/felder_mapping.json", "r", encoding="utf-8") as f:
@@ -16,16 +16,19 @@ ak = st.multiselect("Abrechnungskreis", ["55", "70", "90"], default=["70"])
 stichtag = st.date_input("Stichtag aktiv bis", date(2099, 1, 31))
 seed_file = st.text_input("Seed-Datei (Pfad im Repo)", "seeds/00037736.sql")
 
-# Tabellen- & Feldauswahl
+# Tabelle & Felder
 table = st.selectbox("Tabelle wählen", list(MAPPING.keys()))
 fields = st.multiselect("Felder auswählen", list(MAPPING[table].keys()))
+
+# WHERE-Bedingung
+where_clause = st.text_area("WHERE-Bedingungen (optional)", "PGRDAT.AK = '70'")
 
 if st.button("Scout-Datei erzeugen"):
     try:
         raw = Path(seed_file).read_text(encoding="utf-8", errors="ignore")
         titel = f"{mandant}_{','.join(ak)}_{stichtag}"
 
-        # SELECT-Block patchen (nur wenn Felder gewählt)
+        # SELECT patch
         if fields:
             db_fields = [MAPPING[table].get(f, f) for f in fields]
             select_block = ", ".join([f"{table}.{f}" for f in db_fields])
@@ -35,7 +38,13 @@ if st.button("Scout-Datei erzeugen"):
         else:
             out_text = raw
 
-        # Titel ändern
+        # WHERE patch
+        if where_clause.strip():
+            out_text = re.sub(r"WHERE\s+(.+?)(GROUP BY|ORDER BY|$)",
+                              f"WHERE {where_clause} \\2",
+                              out_text, flags=re.S)
+
+        # Titel patch
         m = re.search(r"i_name IN \('(\d{8})'", raw, flags=re.IGNORECASE)
         if m:
             iname = m.group(1)
@@ -43,10 +52,10 @@ if st.button("Scout-Datei erzeugen"):
                               f'"{iname}","{titel}"',
                               out_text, count=1)
 
-        st.success("Scout-Datei wurde erstellt ✅ (mit SELECT)")
+        st.success("Scout-Datei wurde erstellt ✅ (mit SELECT + WHERE)")
         st.download_button("Scout-Datei herunterladen",
                            data=out_text,
-                           file_name="Scout_Import_SELECT.sql",
+                           file_name="Scout_Import_WHERE.sql",
                            mime="text/plain")
     except Exception as e:
         st.error(f"Fehler: {e}")
