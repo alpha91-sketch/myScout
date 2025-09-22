@@ -19,17 +19,24 @@ def patch_seed_title_only_text(text: str, new_title: str):
                   f'"{iname}","{new_title}"',
                   text, count=1)
     return text
+# Tabellen & Felder Auswahl
+table = st.selectbox("Tabelle wählen", list(MAPPING.keys()))
+fields = st.multiselect("Felder auswählen", list(MAPPING[table].keys()))
+
 if st.button("Scout-Datei erzeugen"):
     try:
         raw = Path(seed_file).read_text(encoding="utf-8", errors="ignore")
         titel = f"{mandant}_{','.join(ak)}_{stichtag}"
 
-        # Feldmapping anwenden
-        db_fields = [MAPPING[table].get(f, f) for f in fields]
-        select_block = ", ".join([f"{table}.{f}" for f in db_fields])
-        out_text = re.sub(r"SELECT\s+(.+?)\s+FROM",
-                          f"SELECT {select_block} FROM",
-                          raw, flags=re.S)
+        # Feldmapping anwenden (nur wenn Felder gewählt wurden)
+        if fields:
+            db_fields = [MAPPING[table].get(f, f) for f in fields]
+            select_block = ", ".join([f"{table}.{f}" for f in db_fields])
+            out_text = re.sub(r"SELECT\s+(.+?)\s+FROM",
+                              f"SELECT {select_block} FROM",
+                              raw, flags=re.S)
+        else:
+            out_text = raw  # Falls keine Felder gewählt, Seed unverändert
 
         # Titel ändern
         m = re.search(r"i_name IN \('(\d{8})'", raw, flags=re.IGNORECASE)
