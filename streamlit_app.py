@@ -1,29 +1,34 @@
 import streamlit as st
-import json
 from datetime import date
+from pathlib import Path
+import re
 
-# Mapping laden
-with open("data/felder_mapping.json", "r", encoding="utf-8") as f:
-    MAPPING = json.load(f)
+st.title("Scout-Import Generator (sicherer Minimal-Patch)")
 
-st.title("Scout-Abfrage Generator")
-
-# Eingaben
 mandant = st.text_input("Mandant", "63000")
-ak = st.multiselect("Abrechnungskreis", ["55", "70", "90"], default=["70"])
+ak = st.multiselect("Abrechnungskreis", ["55","70","90"], default=["70"])
 stichtag = st.date_input("Stichtag aktiv bis", date(2099, 1, 31))
+seed_file = st.text_input("Seed-Datei (Pfad im Repo)", "seeds/00037736.sql")
 
-# Tabellen & Felder
-table = st.selectbox("Tabelle wählen", list(MAPPING.keys()))
-fields = st.multiselect("Felder auswählen", list(MAPPING[table].keys()))
+def patch_seed_title_only_text(text: str, new_title: str):
+    m = re.search(r"i_name IN \('(\d{8})'", text, flags=re.IGNORECASE)
+    if not m:
+        raise RuntimeError("Konnte I_NAME im Seed nicht erkennen.")
+    iname = m.group(1)
+    text = re.sub(rf'"{re.escape(iname)}","[^"]+"',
+                  f'"{iname}","{new_title}"',
+                  text, count=1)
+    return text
 
 if st.button("Scout-Datei erzeugen"):
-    # SELECT Block aus Felder generieren
-    selected = [MAPPING[table][f] for f in fields]
-    sql_text = f"SELECT {', '.join(selected)} FROM {table};"
-
-    st.success("Scout-Datei wurde erstellt ✅")
-    st.download_button("Scout-Datei herunterladen",
-                       data=sql_text,
-                       file_name="Scout_Abfrage.sql",
-                       mime="text/plain")
+    try:
+        raw = Path(seed_file).read_text(encoding="utf-8", errors="ignore")
+        titel = f"{mandant}_{','.join(ak)}_{stichtag}"
+        out_text = patch_seed_title_only_text(raw, titel)
+        st.success("Scout-Datei wurde erstellt ✅ (nur Titel geändert)")
+        st.download_button("Scout-Datei herunterladen",
+                           data=out_text,
+                           file_name="Scout_Import_MINIMAL.sql",
+                           mime="text/plain")
+    except Exception as e:
+        st.error(f"Fehler: {e}")
