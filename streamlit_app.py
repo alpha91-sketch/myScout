@@ -19,16 +19,30 @@ def patch_seed_title_only_text(text: str, new_title: str):
                   f'"{iname}","{new_title}"',
                   text, count=1)
     return text
-
 if st.button("Scout-Datei erzeugen"):
     try:
         raw = Path(seed_file).read_text(encoding="utf-8", errors="ignore")
         titel = f"{mandant}_{','.join(ak)}_{stichtag}"
-        out_text = patch_seed_title_only_text(raw, titel)
-        st.success("Scout-Datei wurde erstellt ✅ (nur Titel geändert)")
+
+        # Feldmapping anwenden
+        db_fields = [MAPPING[table].get(f, f) for f in fields]
+        select_block = ", ".join([f"{table}.{f}" for f in db_fields])
+        out_text = re.sub(r"SELECT\s+(.+?)\s+FROM",
+                          f"SELECT {select_block} FROM",
+                          raw, flags=re.S)
+
+        # Titel ändern
+        m = re.search(r"i_name IN \('(\d{8})'", raw, flags=re.IGNORECASE)
+        if m:
+            iname = m.group(1)
+            out_text = re.sub(rf'"{re.escape(iname)}","[^"]+"',
+                              f'"{iname}","{titel}"',
+                              out_text, count=1)
+
+        st.success("Scout-Datei wurde erstellt ✅ (mit SELECT)")
         st.download_button("Scout-Datei herunterladen",
                            data=out_text,
-                           file_name="Scout_Import_MINIMAL.sql",
+                           file_name="Scout_Import_SELECT.sql",
                            mime="text/plain")
     except Exception as e:
         st.error(f"Fehler: {e}")
