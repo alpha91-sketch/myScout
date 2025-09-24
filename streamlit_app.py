@@ -1,80 +1,100 @@
 import streamlit as st
-from datetime import date, datetime
+from datetime import datetime
 from pathlib import Path
 import re
 import os
 
-st.title("Scout-Import Generator (Template-basiert, stabil)")
+st.title("Scout Pegasus Mini – Freitext → Scout-Export")
 
-# Template laden
-template_file = "seeds/template_minimal.sql"
-raw_template = Path(template_file).read_text(encoding="utf-8", errors="ignore")
+# Seeds im Repo suchen
+seed_files = [f for f in os.listdir("seeds") if f.endswith(".sql")]
+if not seed_files:
+    st.error("Kein Seed in /seeds/ gefunden! Bitte mindestens eine .sql dorthin legen.")
+    st.stop()
 
-# Eingaben
-mandant = st.text_input("Mandant (MAN)", "63000")
-ak = st.text_input("Abrechnungskreis (AK)", "70")
-stichtag = st.date_input("Stichtag (VER_BIS ≥)", date(2099, 1, 31))
+seed_file = st.selectbox("Seed-Datei wählen", seed_files)
 
-# Hilfsfunktionen
-def ddmmyyyy(d: date) -> str:
-    return f"{d.day:02d}.{d.month:02d}.{d.year}"
+# Eingabe: Freitext-Frage
+frage = st.text_area("Deine Frage:", "Welche Mitarbeiter aus AK 70 haben ab 01.01.2024 einen Vertrag?")
 
-def patch_iname_and_title(template_text: str, new_iname: str, new_title: str) -> str:
-    # I_NAME ersetzen
-    out = re.sub(r"99999999", new_iname, template_text)
-    # Titel ändern
-    out = re.sub(r"'TEMPLATE_MINIMAL'", f"'{new_title}'", out, count=1)
-    return out
+# Wörterbuch (Mapping Freitext → Scout-Felder)
+FIELD_MAP = {
+    "name": "PGRDAT.NANAME",
+    "vorname": "PGRDAT.VORNAME",
+    "vertrag": "VERTRAG.VERBEGIN",
+    "vertragsbeginn": "VERTRAG.VERBEGIN",
+    "resturlaub": "ZEITENKAL.RESTURLAUB",
+}
 
-def append_param_updates(base_text: str, iname: str, man: str, ak_val: str, ver_bis_val: str) -> str:
-    updates = f"""
--- === Parameter-Updates für Bedingungen ===
-execsql update L2001.ibedingung
-   set expression='{man}'
- where i_name='{iname}'
-   and lower(tbl_name)='pgrdat'
-   and f_dbcol like '% MAN';
+# Parser für die Eingabe
+def parse_frage(text: str):
+    conds = []
+    fields = []
 
-execsql update L2001.ibedingung
-   set expression='{ak_val}'
- where i_name='{iname}'
-   and lower(tbl_name)='pgrdat'
-   and f_dbcol like '% AK';
+    # AK erkennen
+    m = re.search(r"AK\s*(\d+)", text, flags=re.I)
+    if m:
+        conds.append(f"PGRDAT.AK = '{m.group(1)}'")
 
-execsql update L2001.ibedingung
-   set expression='{ver_bis_val}'
- where i_name='{iname}'
-   and lower(tbl_name)='vertrag'
-   and f_dbcol like '% VERENDE%';
-"""
-    return base_text + "\n" + updates
+    # Datum erkennen
+    m = re.search(r"ab\s*(\d{1,2}\.\d{1,2}\.\d{4})", text)
+    if m:
+        conds.append(f"VERTRAG.VERBEGIN >= '{m.group(1)}'")
 
+    # Felder aus Wörterbuch
+    for k, v in FIELD_MAP.items():
+        if k in text.lower():
+            fields.append(v)
+
+    if not fields:
+        fields = ["PGRDAT.NANAME", "PGRDAT.VORNAME"]  # Standardfelder
+
+    return fields, conds
+
+# Patch-Funktionen
+def patch_imember_title(sql_text: str, new_title: str) -> str:
+    return re.sub(r'("00000001","[^"]+")', f'"00000001","{new_title}"', sql_text, count=1)
+
+def patch_ifield(sql_text: str, fields: list) -> str:
+    lines = []
+    for i, f in enumerate(fields, start=1):
+        lines.append(f'"00000001","{i}","{f}",')
+    block = "\n".join(lines)
+    return re.sub(r'INSERT INTO L2001.ifield.*?\n(.*?)\n/', 
+                  f'INSERT INTO L2001.ifield\n$DATATYPES\n{block}\n/', 
+                  sql_text, flags=re.S)
+
+def patch_ibedingung(sql_text: str, conds: list) -> str:
+    lines = []
+    for i, c in enumerate(conds, start=1):
+        lines.append(f'"00000001","{i}","{c}",')
+    if not lines:
+        lines.append('"00000001","1","1=1",')  # Default-Bedingung (immer wahr)
+    block = "\n".join(lines)
+    return re.sub(r'INSERT INTO L2001.ibedingung.*?\n(.*?)\n/', 
+                  f'INSERT INTO L2001.ibedingung\n$DATATYPES\n{block}\n/', 
+                  sql_text, flags=re.S)
+
+# Hauptlogik
 if st.button("Scout-Datei erzeugen"):
     try:
-        # Neue I_NAME generieren (z. B. Zeitstempel als 8-stellige Zahl)
-        new_iname = datetime.now().strftime("%H%M%S%f")[:8]
-        titel = f"{mandant}_{ak}_{stichtag}"
+        raw = Path(f"seeds/{seed_file}").read_text(encoding="utf-8", errors="ignore")
 
-        # Template patchen
-        patched = patch_iname_and_title(raw_template, new_iname, titel)
+        # Frage parsen
+        fields, conds = parse_frage(frage)
 
-        # Parameter anhängen
-        out = append_param_updates(patched, new_iname, mandant, ak, ddmmyyyy(stichtag))
+        # Patches anwenden
+        titel = frage[:50]
+        out = patch_imember_title(raw, titel)
+        out = patch_ifield(out, fields)
+        out = patch_ibedingung(out, conds)
 
-        # Export speichern
-        os.makedirs("exports", exist_ok=True)
+        # Ergebnisdatei
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        file_name = f"Scout_Template_{timestamp}.sql"
-        file_path = os.path.join("exports", file_name)
-        with open(file_path, "w", encoding="utf-8") as f:
-            f.write(out)
+        file_name = f"Scout_{Path(seed_file).stem}_{timestamp}.sql"
 
-        # Download
-        st.success("Scout-Datei wurde erstellt ✅ (Template-basiert, stabil)")
-        st.download_button("Scout-Datei herunterladen",
-                           data=out,
-                           file_name=file_name,
-                           mime="text/plain")
+        st.success("Scout-Datei generiert ✅")
+        st.download_button("Scout-Datei herunterladen", data=out, file_name=file_name, mime="text/plain")
 
     except Exception as e:
         st.error(f"Fehler: {e}")
