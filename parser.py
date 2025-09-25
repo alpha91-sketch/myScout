@@ -1,45 +1,79 @@
 import os
+import re
+from pathlib import Path
 from openai import OpenAI
 
-# Client initialisieren (API-Key muss in GitHub Secret OPENAI_API_KEY hinterlegt sein)
+# OpenAI Client
 client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
 
-def parse_user_request(user_input: str) -> str:
+# Seed-Datei laden und i_name extrahieren
+def load_seed(seed_path="seeds/scout_temp.sql"):
+    raw = Path(seed_path).read_text(encoding="utf-8", errors="ignore")
+    return raw
+
+def extract_iname(seed_text: str) -> str:
+    m = re.search(r"i_name IN \('(\d{8})'", seed_text, flags=re.IGNORECASE)
+    if not m:
+        raise RuntimeError("I_NAME (8-stellig) nicht gefunden in Seed.")
+    return m.group(1)
+
+def patch_sql(seed_text: str, sql_core: str, title: str, desc: str) -> str:
+    # Patch SELECT-Bereich im Seed durch unseren neuen SQL-Core
+    out_text = re.sub(
+        r"SELECT(.+?)FROM",
+        f"SELECT {sql_core} FROM",
+        seed_text,
+        flags=re.S | re.I
+    )
+
+    # Patch Titel/Bezeichnung
+    out_text = re.sub(
+        r'"(\d{8})","[^"]+"',
+        f'"\\1","{title}"',
+        out_text,
+        count=1
+    )
+
+    return out_text
+
+def parse_user_request(user_input: str, seed_path="seeds/scout_temp.sql") -> str:
     """
-    Nimmt eine natürliche Spracheingabe (z.B. 'Zeige alle Mitarbeiter mit AK=70, die ...')
-    und gibt ein SQL-Snippet im Scout-Format zurück.
+    Nimmt die User-Anfrage entgegen, baut Scout-kompatibles SQL
+    auf Basis einer echten Seed-Datei.
     """
 
+    seed_raw = load_seed(seed_path)
+    iname = extract_iname(seed_raw)
+
+    # 1. KI fragen, welche Felder benötigt werden
     prompt = f"""
-    Du bist ein SQL-Generator für P&I Loga Scout.
-    Aufgabe: Erstelle aus folgender Anforderung eine importierbare Scout-SQL-Abfrage.
-    Nutze die Tabellen PGRDAT (Personendaten) und VERTRAG (Vertragsdaten) als Kern,
-    und ergänze weitere Tabellen falls nötig.
-    Achte auf:
-    - korrektes SELECT
-    - sauberes WHERE
-    - GROUP BY und ORDER BY nur falls sinnvoll
-    - nur gültige Feldnamen aus dem Feldkatalog
-    - Ausgabe als plain SQL, ohne Kommentare oder Erklärungen.
+    Die User-Anfrage lautet: {user_input}
 
-    Anforderung:
-    {user_input}
+    Aufgabe:
+    - Identifiziere die relevanten Felder aus PGRDAT, VERTRAG, ZEITENKAL, SALDEN.
+    - Baue daraus eine SELECT-Liste (nur SELECT-Teil).
+    - Ergänze WHERE-Bedingungen falls nötig.
+    - Beispiel: PGRDAT.MAN, PGRDAT.AK, PGRDAT.PNR, VERTRAG.VERBEGIN
     """
 
     response = client.chat.completions.create(
         model="gpt-4o-mini",
-        messages=[
-            {"role": "system", "content": "Du bist ein SQL-Generator für Scout-Auswertungen."},
-            {"role": "user", "content": prompt},
-        ],
-        temperature=0.2,
+        messages=[{"role": "system", "content": "Du bist ein SQL-Generator für LOGA Scout."},
+                  {"role": "user", "content": prompt}],
+        temperature=0
     )
 
-    sql_code = response.choices[0].message.content.strip()
-    return sql_code
+    sql_raw = response.choices[0].message.content.strip()
 
+    # Falls die KI nichts brauchbares zurückgibt
+    if "PGRDAT" not in sql_raw and "VERTRAG" not in sql_raw:
+        sql_raw = "PGRDAT.MAN, PGRDAT.AK, PGRDAT.PNR, PGRDAT.NANAME, PGRDAT.VORNAME"
 
-# Testlauf (kann in Streamlit oder Colab ausprobiert werden)
-if __name__ == "__main__":
-    test_input = "Zeige alle Mitarbeiter mit Vertragsbeginn nach dem 01.01.2024 und leeren Personalakten."
-    print(parse_user_request(test_input))
+    # 2. Titel und Beschreibung
+    title = re.sub(r"[^A-Za-z0-9]+", "_", user_input[:30])
+    desc = f"Generiert aus Anfrage: {user_input}"
+
+    # 3. Seed patchen
+    sql_final = patch_sql(seed_raw, sql_raw, title, desc)
+
+    return sql_final
