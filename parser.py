@@ -1,135 +1,154 @@
-import os
-import re
-import json
+# parser.py
+import os, re, json, unicodedata
 from pathlib import Path
+from typing import Dict, List
 from openai import OpenAI
 
-# ---------- Config ----------
+# ---------- Pfade ----------
 DEFAULT_SEED = "seeds/scout_temp.sql"
 MAPPING_PATH = "data/felder_mapping.json"
 
-# OpenAI Client (API-Key in Streamlit-Cloud Secrets oder Env hinterlegen)
+# ---------- OpenAI Client ----------
 client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
 
-# ---------- Helpers ----------
+# ---------- Utils ----------
+def _norm(s: str) -> str:
+    """kleine Normalisierung: klein, Diakritik raus, nur a-z0-9_"""
+    s = unicodedata.normalize("NFKD", s).encode("ascii", "ignore").decode("ascii")
+    s = re.sub(r"[^a-zA-Z0-9_]+", "_", s.lower()).strip("_")
+    return s
+
 def load_seed(seed_path: str) -> str:
     return Path(seed_path).read_text(encoding="utf-8", errors="ignore")
 
-def load_mapping(path: str) -> dict:
-    if Path(path).exists():
-        return json.loads(Path(path).read_text(encoding="utf-8"))
-    # Minimaler Fallback falls Datei fehlt
-    return {
-        "terms": {
-            "mandant": "PGRDAT.MAN",
-            "ak": "PGRDAT.AK",
-            "pnr": "PGRDAT.PNR",
-            "name": "PGRDAT.NANAME",
-            "vorname": "PGRDAT.VORNAME",
-            "vertragsbeginn": "VERTRAG.VERBEGIN",
-            "vertragsende": "VERTRAG.VERENDE",
-            "sv_tage": "SALDEN.SV_TAGE",
-            "fehlzeitencode": "ZEITENKAL.FEHLKZ",
-            "fehlzeit_von": "ZEITENKAL.VON",
-            "fehlzeit_bis": "ZEITENKAL.BIS"
-        },
-        "join_rules": {
-            "VERTRAG": "JOIN VERTRAG ON PGRDAT.MAN = VERTRAG.MAN AND PGRDAT.AK = VERTRAG.AK AND PGRDAT.PNR = VERTRAG.PNR",
-            "ZEITENKAL": "LEFT JOIN ZEITENKAL ON PGRDAT.MAN = ZEITENKAL.MAN AND PGRDAT.AK = ZEITENKAL.AK AND PGRDAT.PNR = ZEITENKAL.PNR",
-            "SALDEN":   "LEFT JOIN SALDEN   ON PGRDAT.MAN = SALDEN.MAN   AND PGRDAT.AK = SALDEN.AK   AND PGRDAT.PNR = SALDEN.PNR"
-        }
-    }
+def load_mapping(path: str) -> Dict:
+    m = json.loads(Path(path).read_text(encoding="utf-8"))
+    # zusätzlich: normalisierte Term-Keys
+    terms = m.get("terms", {})
+    norm_terms = { _norm(k): v for k, v in terms.items() }
+    m["terms_norm"] = norm_terms
+    return m
 
-def extract_iname(seed_text: str) -> str:
-    m = re.search(r"i_name IN \('(\d{8})'", seed_text, flags=re.I)
-    if m: return m.group(1)
-    # Fallback: erste 8-stellige Nummer
-    m = re.search(r'"(\d{8})"', seed_text)
-    if m: return m.group(1)
-    raise RuntimeError("I_NAME (8-stellig) nicht im Seed gefunden.")
+def extract_iname(seed_sql: str) -> str:
+    m = re.search(r"i_name\s+IN\s+\('(\d{8})'\)", seed_sql, flags=re.I)
+    if not m:
+        raise RuntimeError("I_NAME (member) nicht gefunden.")
+    return m.group(1)
 
-def patch_title(seed_text: str, new_title: str) -> str:
-    # Ersetze erste Titelstelle in IMEMBER
-    return re.sub(r'"(\d{8})","[^"]+"', f'"\\1","{new_title}"', seed_text, count=1)
+def patch_title(seed_sql: str, new_title: str) -> str:
+    iname = extract_iname(seed_sql)
+    return re.sub(rf'"{re.escape(iname)}","[^"]+"',
+                  f'"{iname}","{new_title}"', seed_sql, count=1)
 
-def patch_select(seed_text: str, select_fields: list) -> str:
-    select_block = ", ".join(select_fields) if select_fields else "PGRDAT.MAN, PGRDAT.AK, PGRDAT.PNR"
-    return re.sub(r"SELECT\s+(.+?)\s+FROM", f"SELECT {select_block} FROM", seed_text, flags=re.S | re.I)
+def _split_at_select(seed_sql: str):
+    m = re.search(r"\bSELECT\b", seed_sql, flags=re.I)
+    if not m:
+        raise RuntimeError("SELECT-Block im Seed nicht gefunden.")
+    return seed_sql[:m.start()], seed_sql[m.start():]
 
-def insert_joins(seed_text: str, join_lines: list) -> str:
-    if not join_lines: return seed_text
-    join_text = "\n    " + "\n    ".join(join_lines)
-    # Nach der VERTRAG-Join-Zeile einfügen (erste Treffer)
-    return re.sub(r"(JOIN\s+VERTRAG[^\n]*\n)", r"\1" + join_text + "\n", seed_text, count=1, flags=re.I)
+def patch_select_where_joins(seed_sql: str,
+                             select_cols: List[str],
+                             extra_where: str,
+                             extra_joins: List[str]) -> str:
+    head, block = _split_at_select(seed_sql)
 
-def patch_where(seed_text: str, extra_conds: list) -> str:
-    if not extra_conds: return seed_text
-    add = " AND ".join([f"({c})" for c in extra_conds])
-    # WHERE existiert?
-    m = re.search(r"\bWHERE\b\s+(.+?)(\bGROUP BY\b|\bORDER BY\b|$)", seed_text, flags=re.S | re.I)
-    if m:
-        old_expr = m.group(1).strip()
-        new_expr = f"({old_expr}) AND {add}"
-        start, end = m.start(1), m.end(1)
-        return seed_text[:start] + new_expr + seed_text[end:]
-    else:
-        # WHERE neu zwischen FROM/JOINs und GROUP/ORDER/Ende einsetzen
-        m2 = re.search(r"(FROM.+?)(\bGROUP BY\b|\bORDER BY\b|$)", seed_text, flags=re.S | re.I)
-        if not m2: 
-            # worst-case: einfach anhängen
-            return seed_text + "\nWHERE " + add + "\n"
-        insert_pos = m2.end(1)
-        return seed_text[:insert_pos] + "\nWHERE " + add + "\n" + seed_text[insert_pos:]
+    # SELECT-Spalten ersetzen (nur im Query-Block)
+    block = re.sub(r"SELECT\s+(.+?)\s+FROM",
+                   "SELECT " + ", ".join(select_cols) + " FROM",
+                   block, flags=re.S | re.I)
 
-# ---------- LLM: Freitext -> Plan-JSON ----------
-def plan_from_llm(user_input: str, mapping: dict) -> dict:
-    terms = mapping.get("terms", {})
-    join_rules = mapping.get("join_rules", {})
-    system = (
-        "Du bist ein Assistent für LOGA Scout. "
-        "Nutze nur Felder aus dem gegebenen Mapping. "
-        "Antworte ausschließlich mit JSON."
-    )
-    user = f"""
-Anforderung: {user_input}
+    # Joins nach FROM einfügen (nur im Query-Block)
+    if extra_joins:
+        m = re.search(r"(FROM\s+.+?)(\nWHERE|\nGROUP BY|\nORDER BY|$)", block, flags=re.S | re.I)
+        if m:
+            before = m.group(1)
+            after = block[m.end(1):]
+            join_txt = "\n    " + "\n    ".join(extra_joins)
+            block = before + join_txt + after
 
-Verfügbare Felder (Synonym -> Feld):
-{json.dumps(terms, ensure_ascii=False, indent=2)}
-Erzeuge ein JSON der Form:
-{{
-  "fields": ["PGRDAT.NANAME","PGRDAT.VORNAME","VERTRAG.VERBEGIN"],
-  "conditions": ["PGRDAT.AK = '70'", "SALDEN.SV_TAGE = 0", "VERTRAG.VERBEGIN >= '2024-01-01'"],
-  "tables_extra": ["ZEITENKAL","SALDEN"],
-  "group_by": [],
-  "order_by": ""
-}}
-- fields: nur vollqualifizierte Felder (Werte des Mappings verwenden)
-- conditions: gültige SQL-Ausdrücke mit den vollqualifizierten Feldern
-- tables_extra: zusätzliche Tabellen außer PGRDAT/VERTRAG, falls benötigt
-- group_by: optional Liste vollqualifizierter Felder
-- order_by: optional String (z.B. "1,2" oder "PGRDAT.NANAME")
-Nur JSON, kein Fließtext.
+    # WHERE zusammenführen/ergänzen (nur im Query-Block)
+    extra_where = extra_where.strip()
+    if extra_where:
+        if re.search(r"\bWHERE\b", block, flags=re.I):
+            block = re.sub(r"WHERE\s+(.+?)(GROUP BY|ORDER BY|$)",
+                           lambda m: "WHERE (" + m.group(1).strip() + ") AND (" + extra_where + ") " + m.group(2),
+                           block, flags=re.S | re.I)
+        else:
+            # erstes Zeilenende nach FROM/JOINS suchen
+            m2 = re.search(r"(FROM[\s\S]+?)(GROUP BY|ORDER BY|$)", block, flags=re.I)
+            if m2:
+                prefix = m2.group(1)
+                suffix = block[m2.end(1):]
+                block = prefix + "\nWHERE " + extra_where + "\n" + suffix
+            else:
+                block += "\nWHERE " + extra_where + "\n"
+
+    return head + block
+
+# ---------- LLM-Plan ----------
+SYSTEM_PROMPT = """Du bist ein Parser, der natürliche Fragen in einen Plan für LOGA/SCOUT-SQL übersetzt.
+Antworte NUR als JSON mit Feldern:
+- fields: Liste SQL-Spalten (z.B. "PGRDAT.MAN", "VERTRAG.VERBEGIN")
+- conditions: eine einzige WHERE-Bedingung als SQL-Text (ohne 'WHERE'), ODER "" wenn nicht nötig
+- tables_extra: optionale Liste zusätzlicher Tabellen: ["ZEITENKAL","SALDEN"] wenn gebraucht
+- group_by: Liste Positionszahlen als Strings (z.B. ["1","2"])
+- order_by: Text wie "1,2"
+Verwende NUR bekannte Spaltennamen aus dem Mapping.
 """
-    resp = client.chat.completions.create(
-        model="gpt-4o-mini",
-        messages=[{"role":"system","content":system},{"role":"user","content":user}],
-        temperature=0
-    )
-    raw = resp.choices[0].message.content.strip()
+
+def plan_from_llm(user_input: str, mapping: Dict) -> Dict:
+    # Begriffe im Text heuristisch gegen terms_norm mappen, falls LLM nicht erreichbar
+    terms_norm = mapping.get("terms_norm", {})
+    guessed_fields = []
+    for k_norm, col in terms_norm.items():
+        if re.search(r"\b" + re.escape(k_norm) + r"\b", _norm(user_input)):
+            guessed_fields.append(col)
+    # Feldfallback
+    if not guessed_fields:
+        guessed_fields = ["PGRDAT.MAN","PGRDAT.AK","PGRDAT.PNR","PGRDAT.NANAME","PGRDAT.VORNAME"]
+
+    # LLM-Versuch
     try:
-        plan = json.loads(raw)
+        msgs = [
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": json.dumps({"mapping_terms": list(mapping["terms"].keys()),
+                                                    "user_request": user_input}, ensure_ascii=False)}
+        ]
+        resp = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=msgs,
+            temperature=0.1,
+        )
+        raw = resp.choices[0].message.content.strip()
+        # JSON extrahieren
+        json_txt = raw[raw.find("{"): raw.rfind("}")+1]
+        plan = json.loads(json_txt)
     except Exception:
-        # sehr defensiver Fallback
+        # Solider Fallback
+        cond = []
+        # einfache Muster
+        m_ak = re.search(r"\bak\s*=\s*'?(\d+)'?", user_input, flags=re.I)
+        if m_ak: cond.append(f"PGRDAT.AK = '{m_ak.group(1)}'")
+        if "sv-tage=0" in _norm(user_input) or "sv_tage=0" in _norm(user_input):
+            cond.append("COALESCE(SALDEN.SV_TAGE,0) = 0")
+        condition = " AND ".join(cond)
+
+        tables_extra = []
+        if "sv" in _norm(user_input): tables_extra.append("SALDEN")
+        if "fehlzeit" in _norm(user_input) or "abgelaufen" in _norm(user_input):
+            tables_extra.append("ZEITENKAL")
+
         plan = {
-            "fields": ["PGRDAT.MAN","PGRDAT.AK","PGRDAT.PNR","PGRDAT.NANAME","PGRDAT.VORNAME","VERTRAG.VERBEGIN","VERTRAG.VERENDE"],
-            "conditions": [],
-            "tables_extra": [],
+            "fields": guessed_fields,
+            "conditions": condition,
+            "tables_extra": tables_extra,
             "group_by": [],
             "order_by": ""
         }
-    # Minimal absichern
-    plan.setdefault("fields", [])
-    plan.setdefault("conditions", [])
+
+    # Defaults absichern
+    plan.setdefault("fields", guessed_fields)
+    plan.setdefault("conditions", "")
     plan.setdefault("tables_extra", [])
     plan.setdefault("group_by", [])
     plan.setdefault("order_by", "")
@@ -138,24 +157,42 @@ Nur JSON, kein Fließtext.
 # ---------- Hauptfunktion ----------
 def parse_user_request(user_input: str, seed_path: str = DEFAULT_SEED) -> str:
     seed = load_seed(seed_path)
-    iname = extract_iname(seed)
     mapping = load_mapping(MAPPING_PATH)
 
-    # 1) LLM-Plan holen
+    # 1) Plan
     plan = plan_from_llm(user_input, mapping)
 
-    # 2) SELECT patchen
-    out = patch_title(seed, re.sub(r"[^A-Za-z0-9]+","_", user_input[:40]))
-    out = patch_select(out, plan["fields"])
+    # 2) SELECT-Felder
+    fields = plan["fields"]
+    if not fields:
+        fields = ["PGRDAT.MAN","PGRDAT.AK","PGRDAT.PNR"]
+    select_cols = fields
 
-    # 3) JOINS einfügen (nur zusätzliche)
+    # 3) zusätzliche Joins
     join_rules = mapping.get("join_rules", {})
-    extra = [t for t in plan["tables_extra"] if t in join_rules and t.upper() in ["ZEITENKAL","SALDEN"]]
-    join_lines = [join_rules[t] for t in extra]
-    out = insert_joins(out, join_lines)
+    extra = [t for t in plan["tables_extra"] if t in join_rules]
+    joins = [join_rules[t] for t in extra]
 
-    # 4) WHERE erweitern
-    out = patch_where(out, plan["conditions"])
-    # 5) GROUP/ORDER optional (nur ersetzen, wenn vorhanden)
-    if plan["group_by"]:
-        gb = "GROUP BY " + ", ".join(plan["group_by
+    # 4) WHERE
+    where_expr = plan["conditions"]
+
+    # 5) Query patchen
+    title_snippet = re.sub(r"[^A-Za-z0-9]+","_", user_input[:40])
+    out = patch_title(seed, title_snippet)
+    out = patch_select_where_joins(out, select_cols, where_expr, joins)
+
+    # 6) Optional: GROUP/ORDER ersetzen, wenn Plan etwas liefert und Seed Blöcke hat
+    if plan.get("group_by"):
+        gb = "GROUP BY " + ", ".join([str(x) for x in plan["group_by"]])
+        if re.search(r"\bGROUP BY\b", out, flags=re.I):
+            out = re.sub(r"GROUP BY\s+(.+?)(ORDER BY|$)", gb + " \\2", out, flags=re.S | re.I)
+        else:
+            out += "\n" + gb
+    if plan.get("order_by"):
+        ob = "ORDER BY " + plan["order_by"]
+        if re.search(r"\bORDER BY\b", out, flags=re.I):
+            out = re.sub(r"ORDER BY\s+(.+?)($|\n)", ob + " \\2", out, flags=re.S | re.I)
+        else:
+            out += "\n" + ob
+
+    return out
