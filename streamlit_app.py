@@ -17,13 +17,20 @@ def read_seed(path: str) -> str:
 
 def extract_iname(sql_text: str) -> str:
     """
-    Extrahiert I_NAME aus IMEMBER-Datenzeile (erste $DATATYPES Zeile).
-    Beispiel: "00012345","Reporttitel",
+    Versucht, die I_NAME (8-stellige Nummer) aus dem IMEMBER-Block zu ziehen.
+    Arbeitet robust auch ohne $DATATYPES oder wenn Reihenfolge anders ist.
     """
-    m = re.search(r'INSERT\s+INTO\s+L2001\.imember.*?\$DATATYPES\s*\n\s*"(\d{8})","', sql_text, flags=re.I|re.S)
-    if not m:
-        raise RuntimeError("I_NAME (imember) nicht gefunden.")
-    return m.group(1)
+    # 1. Direkt nach 8-stelliger Zahl in Anführungszeichen suchen
+    m = re.search(r'INSERT\s+INTO\s+L2001\.imember.*?\n\s*"(\d{8})"', sql_text, flags=re.I|re.S)
+    if m:
+        return m.group(1)
+
+    # 2. Fallback: irgendeine 8-stellige Zahl in Anführungszeichen
+    m = re.search(r'"(\d{8})"', sql_text)
+    if m:
+        return m.group(1)
+
+    raise RuntimeError("I_NAME (imember) nicht gefunden. Bitte prüfen, ob Seed-Datei korrekt ist.")
 
 def patch_title(sql_text: str, iname: str, new_title: str) -> str:
     # Ersetzt NUR die erste IMEMBER-Zeile ("<iname>","<titel>",)
