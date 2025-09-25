@@ -20,6 +20,7 @@ conds_input = st.text_area("WHERE-Bedingungen", "PGRDAT.AK = '70' AND VERTRAG.VE
 # Hilfsfunktionen
 def patch_title(sql_text: str, new_title: str) -> str:
     return re.sub(r'("(\d{8})","[^"]+")', f'"\\2","{new_title}"', sql_text, count=1)
+
 def patch_ifield(sql_text: str, fields: list) -> str:
     m = re.search(r'(INSERT INTO L2001\.ifield.*?\$DATATYPES\n)(.*?)(\n/)', sql_text, flags=re.S|re.I)
     if not m: return sql_text
@@ -44,7 +45,6 @@ def patch_ibedingung(sql_text: str, conds: list) -> str:
 if st.button("Scout-Datei erzeugen"):
     try:
         raw = Path(seed_file).read_text(encoding="utf-8", errors="ignore")
-
         fields = [f.strip() for f in fields_input.split(",") if f.strip()]
         conds = [c.strip() for c in conds_input.split("AND") if c.strip()]
 
