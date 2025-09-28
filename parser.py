@@ -196,3 +196,11 @@ def parse_user_request(user_input: str, seed_path: str = DEFAULT_SEED) -> str:
             out += "\n" + ob
 
     return out
+def check_seed_sql(seed_path: str = DEFAULT_SEED) -> None:
+    """Prüft, ob der Seed ein SELECT/FROM enthält und gibt Ergebnis aus."""
+    sql = load_seed(seed_path)
+    m = re.search(r"(execsql\s+)?SELECT[\s\S]+?FROM", sql, flags=re.I)
+    if m:
+        print(f"✅ Seed OK: SELECT-Block gefunden in {seed_path}")
+    else:
+        print(f"❌ Fehler: Kein SELECT-Block in {seed_path} gefunden!")
