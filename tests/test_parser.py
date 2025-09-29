@@ -1,18 +1,23 @@
+from parsers.parser_blocks import assemble_scout_file
+from parsers.validator import validate_scout_sql
 from pathlib import Path
-from parser import parse_user_request
 
-SEED_PATH = "seeds/scout_temp.sql"
-EXPORT_PATH = "exports/test_output.sql"
+def test_build_sql():
+    iname = "00049999"
+    tables = ["PGRDAT","SALDEN"]
+    fields = ["PGRDAT.MAN","PGRDAT.AK","PGRDAT.PNR","SALDEN.URL_REST"]
+    joins = [["PGRDAT","MAN","SALDEN","MAN"],
+             ["PGRDAT","AK","SALDEN","AK"],
+             ["PGRDAT","PNR","SALDEN","PNR"]]
+    conditions = ["PGRDAT.AK = '70'"]
 
-def test_generate_sql():
-    user_input = "Zeige alle Mitarbeiter mit AK=70 und Resturlaub"
-    sql_code = parse_user_request(user_input, seed_path=SEED_PATH)
+    sql_code = assemble_scout_file(iname, tables, fields, joins, conditions)
 
     Path("exports").mkdir(exist_ok=True)
-    Path(EXPORT_PATH).write_text(sql_code, encoding="utf-8")
+    out_path = "exports/test_import.sql"
+    Path(out_path).write_text(sql_code, encoding="utf-8")
 
-    assert "IFIELD" in sql_code
-    assert "IBEZIEHUNG" in sql_code
-    assert "IBEDINGUNG" in sql_code
+    print("✅ Datei erzeugt:", out_path)
 
-    print("✅ Scout-konforme SQL generiert:", EXPORT_PATH)
+    # Validierung
+    validate_scout_sql(out_path)
