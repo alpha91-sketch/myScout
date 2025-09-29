@@ -1,33 +1,50 @@
 {
-  "terms": {
-    "mandant": "PGRDAT.MAN",
-    "ak": "PGRDAT.AK",
-    "abrechnungskreis": "PGRDAT.AK",
-    "pnr": "PGRDAT.PNR",
-    "personalnummer": "PGRDAT.PNR",
-    "name": "PGRDAT.NANAME",
-    "nachname": "PGRDAT.NANAME",
-    "vorname": "PGRDAT.VORNAME",
-
-    "vertragsbeginn": "VERTRAG.VERBEGIN",
-    "vertragsende": "VERTRAG.VERENDE",
-    "beschäftigungsschlüssel": "VERTRAG.BESCHSCHL",
-
-    "sv_tage": "SALDEN.SV_TAGE",
-    "sv-tage": "SALDEN.SV_TAGE",
-    "resturlaub": "SALDEN.URL_REST",
-    "urlaub_gesamt": "SALDEN.URL_GESAMT",
-    "urlaub_gesetzlich": "SALDEN.URL_GESETZLICH",
-    "urlaub_freiwillig": "SALDEN.URL_FREIWILLIG",
-
-    "fehlzeitencode": "ZEITENKAL.FEHLKZ",
-    "fehlkz": "ZEITENKAL.FEHLKZ",
-    "fehlzeit_von": "ZEITENKAL.VON",
-    "fehlzeit_bis": "ZEITENKAL.BIS"
+  "PGRDAT": {
+    "join_keys": [],
+    "fields": {
+      "mandant": "PGRDAT.MAN",
+      "abrechnungskreis": "PGRDAT.AK",
+      "personalnummer": "PGRDAT.PNR",
+      "nachname": "PGRDAT.NANAME",
+      "vorname": "PGRDAT.VORNAME"
+    }
   },
-  "join_rules": {
-    "VERTRAG": "JOIN VERTRAG ON PGRDAT.MAN = VERTRAG.MAN AND PGRDAT.AK = VERTRAG.AK AND PGRDAT.PNR = VERTRAG.PNR",
-    "ZEITENKAL": "LEFT JOIN ZEITENKAL ON PGRDAT.MAN = ZEITENKAL.MAN AND PGRDAT.AK = ZEITENKAL.AK AND PGRDAT.PNR = ZEITENKAL.PNR",
-    "SALDEN":   "LEFT JOIN SALDEN   ON PGRDAT.MAN = SALDEN.MAN   AND PGRDAT.AK = SALDEN.AK   AND PGRDAT.PNR = SALDEN.PNR"
+  "VERTRAG": {
+    "join_keys": [
+      ["PGRDAT", "MAN", "VERTRAG", "MAN"],
+      ["PGRDAT", "AK", "VERTRAG", "AK"],
+      ["PGRDAT", "PNR", "VERTRAG", "PNR"]
+    ],
+    "fields": {
+      "vertragsbeginn": "VERTRAG.VERBEGIN",
+      "vertragsende": "VERTRAG.VERENDE",
+      "beschäftigungsschlüssel": "VERTRAG.BESCHSCHL"
+    }
+  },
+  "ZEITENKAL": {
+    "join_keys": [
+      ["PGRDAT", "MAN", "ZEITENKAL", "MAN"],
+      ["PGRDAT", "AK", "ZEITENKAL", "AK"],
+      ["PGRDAT", "PNR", "ZEITENKAL", "PNR"]
+    ],
+    "fields": {
+      "fehlzeitencode": "ZEITENKAL.FEHLKZ",
+      "beginn_fehlzeit": "ZEITENKAL.ZEIT_VON",
+      "ende_fehlzeit": "ZEITENKAL.ZEIT_BIS",
+      "sv_tage": "ZEITENKAL.SV_TAGE"
+    }
+  },
+  "SALDEN": {
+    "join_keys": [
+      ["PGRDAT", "MAN", "SALDEN", "MAN"],
+      ["PGRDAT", "AK", "SALDEN", "AK"],
+      ["PGRDAT", "PNR", "SALDEN", "PNR"]
+    ],
+    "fields": {
+      "urlaub_gesamt": "SALDEN.URL_GESAMT",
+      "urlaub_gesetzlich": "SALDEN.URL_GESETZLICH",
+      "urlaub_freiwillig": "SALDEN.URL_FREIWILLIG",
+      "resturlaub": "SALDEN.URL_REST"
+    }
   }
 }
