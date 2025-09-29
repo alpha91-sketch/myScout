@@ -28,6 +28,17 @@ def extract_iname(seed_sql: str) -> str:
     return m.group(1)
 
 # ---------- Patch-Funktionen ----------
+def patch_itable(seed_sql: str, iname: str, tables: List[str]) -> str:
+    """Fügt ITABLE-Zeilen ein für jede verwendete Tabelle."""
+    insert_pos = seed_sql.find("INSERT INTO L2001.itable")
+    if insert_pos == -1:
+        raise RuntimeError("ITABLE-Block nicht gefunden")
+    lines = []
+    for i, tbl in enumerate(tables, start=1):
+        lines.append(f"\"{iname}\",\"{tbl}\",\"{tbl}\",\"1\",{i},")
+    new_block = "\n".join(lines) + "\n"
+    return seed_sql + "\n" + new_block
+
 def patch_ifield(seed_sql: str, iname: str, fields: List[str]) -> str:
     """Fügt IFIELD-Zeilen ein für die gewünschten Felder."""
     insert_pos = seed_sql.find("INSERT INTO L2001.ifield")
@@ -69,33 +80,43 @@ def parse_user_request(user_input: str, seed_path: str = DEFAULT_SEED) -> str:
     table_map = load_table_mapping(TABLE_MAPPING_PATH)
     iname = extract_iname(seed)
 
-    # Fallback: Basisfelder
+    # Basisfelder
     selected_fields = [table_map["PGRDAT"]["fields"]["mandant"],
                        table_map["PGRDAT"]["fields"]["abrechnungskreis"],
                        table_map["PGRDAT"]["fields"]["personalnummer"]]
 
     joins_needed = []
     conditions = []
+    tables_used = ["PGRDAT"]
 
     # Erkennung über Keywords im User-Input
     if "resturlaub" in _norm(user_input):
         selected_fields.append(table_map["SALDEN"]["fields"]["resturlaub"])
         joins_needed.extend(table_map["SALDEN"]["join_keys"])
+        tables_used.append("SALDEN")
+
     if "fehlzeit" in _norm(user_input):
         selected_fields.append(table_map["ZEITENKAL"]["fields"]["fehlzeitencode"])
         selected_fields.append(table_map["ZEITENKAL"]["fields"]["beginn_fehlzeit"])
         selected_fields.append(table_map["ZEITENKAL"]["fields"]["ende_fehlzeit"])
         joins_needed.extend(table_map["ZEITENKAL"]["join_keys"])
+        tables_used.append("ZEITENKAL")
+
     if "vertrag" in _norm(user_input):
         selected_fields.append(table_map["VERTRAG"]["fields"]["vertragsbeginn"])
         selected_fields.append(table_map["VERTRAG"]["fields"]["vertragsende"])
         joins_needed.extend(table_map["VERTRAG"]["join_keys"])
+        tables_used.append("VERTRAG")
+
     if "ak=70" in _norm(user_input):
         conditions.append("PGRDAT.AK = '70'")
+
     if "sv_tage=0" in _norm(user_input):
         conditions.append("COALESCE(ZEITENKAL.SV_TAGE,0) = 0")
 
-    out = patch_ifield(seed, iname, selected_fields)
+    # Patches
+    out = patch_itable(seed, iname, tables_used)
+    out = patch_ifield(out, iname, selected_fields)
     out = patch_ibeziehung(out, iname, joins_needed)
     out = patch_ibedingung(out, iname, conditions)
 
